@@ -137,7 +137,8 @@ class DupeGuru(Broadcaster):
             os.makedirs(self.appdata)
         self.app_mode = AppMode.Standard
         self.discarded_file_count = 0
-        self.directories = directories.Directories()
+        hash_cache_file = op.join(self.appdata, "hash.cache")
+        self.directories = directories.Directories(hash_cache_file)
         self.results = results.Results(self)
         self.ignore_list = IgnoreList()
         # In addition to "app-level" options, this dictionary also holds options that will be

@@ -5,6 +5,8 @@
 # http://www.gnu.org/licenses/gpl-3.0.html
 
 import os
+import hashlib
+import sqlite3
 from xml.etree import ElementTree as ET
 import logging
 
@@ -43,6 +45,65 @@ class InvalidPathError(Exception):
     """The path being added is invalid"""
 
 
+def calc_md5(path):
+    # type: (Path, ) -> bytes
+
+    with path.open("rb") as fp:
+        md5 = hashlib.md5()
+        # The goal here is to not run out of memory on really big files. However, the chunk
+        # size has to be large enough so that the python loop isn't too costly in terms of
+        # CPU.
+        CHUNK_SIZE = 1024 * 1024  # 1 mb
+        filedata = fp.read(CHUNK_SIZE)
+        while filedata:
+            md5.update(filedata)
+            filedata = fp.read(CHUNK_SIZE)
+        return md5.digest()
+
+
+class FilesDB:
+
+    create_table_query = "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, size INTEGER, mtime_ns INTEGER, entry_dt DATETIME, md5 BLOB)"
+    md5_select_query = "SELECT md5 FROM files WHERE path=? AND size=? and mtime_ns=?"
+    md5_insert_query = "REPLACE INTO files (path, size, mtime_ns, entry_dt, md5) VALUES (?, ?, ?, datetime('now'), ?)"
+
+    def __init__(self, path):
+        # type: (str, ) -> None
+
+        self.conn = sqlite3.connect(path)
+        self.cur = self.conn.cursor()
+        self.setup()
+
+    def setup(self):
+        self.cur.execute(self.create_table_query)
+
+    def get_md5(self, path):
+        # type: (Path, ) -> bytes
+
+        stat = self.path.stat()
+        size = stat.st_size
+        mtime_ns = stat.st_mtime_ns
+
+        self.cur.execute(self.md5_select_query, (str(path), size, mtime_ns))
+        result = self.cur.fetchone()
+
+        if result:
+            return result[0]
+        else:
+            md5 = calc_md5(path)
+            self.cur.execute(self.md5_insert_query, (str(path), size, mtime_ns, md5))
+            return md5
+
+    def close(self):
+        self.conn.close()
+
+
+class FilesDBDummy:
+
+    def get_md5(self, path):
+        return calc_md5(path)
+
+
 class Directories:
     """Holds user folder selection.
 
@@ -54,10 +115,14 @@ class Directories:
     """
 
     # ---Override
-    def __init__(self):
+    def __init__(self, hash_cache_file=None):
         self._dirs = []
         # {path: state}
         self.states = {}
+        if hash_cache_file:
+            self.filesdb = FilesDB(hash_cache_file)
+        else:
+            self.filesdb = FilesDBDummy()
 
     def __contains__(self, path):
         for p in self._dirs:
@@ -94,14 +159,14 @@ class Directories:
             try:
                 if state != DirectoryState.Excluded:
                     found_files = [
-                        fs.get_file(root + f, fileclasses=fileclasses) for f in files
+                        fs.get_file(root + f, self.filesdb, fileclasses=fileclasses) for f in files
                     ]
                     found_files = [f for f in found_files if f is not None]
                     # In some cases, directories can be considered as files by dupeGuru, which is
                     # why we have this line below. In fact, there only one case: Bundle files under
                     # OS X... In other situations, this forloop will do nothing.
                     for d in dirs[:]:
-                        f = fs.get_file(root + d, fileclasses=fileclasses)
+                        f = fs.get_file(root + d, self.filesdb, fileclasses=fileclasses)
                         if f is not None:
                             found_files.append(f)
                             dirs.remove(d)
@@ -181,7 +246,7 @@ class Directories:
         if folderclass is None:
             folderclass = fs.Folder
         for path in self._dirs:
-            from_folder = folderclass(path)
+            from_folder = folderclass(path, self.filesdb)
             for folder in self._get_folders(from_folder, j):
                 yield folder
 

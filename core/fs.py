@@ -82,10 +82,11 @@ class File:
     # Slots for File make us save quite a bit of memory. In a memory test I've made with a lot of
     # files, I saved 35% memory usage with "unread" files (no _read_info() call) and gains become
     # even greater when we take into account read attributes (70%!). Yeah, it's worth it.
-    __slots__ = ("path", "is_ref", "words") + tuple(INITIAL_INFO.keys())
+    __slots__ = ("path", "db", "is_ref", "words") + tuple(INITIAL_INFO.keys())
 
-    def __init__(self, path):
+    def __init__(self, path, db):
         self.path = path
+        self.db = db
         for attrname in self.INITIAL_INFO:
             setattr(self, attrname, NOT_SET)
 
@@ -129,18 +130,7 @@ class File:
                 pass
         elif field == "md5":
             try:
-                fp = self.path.open("rb")
-                md5 = hashlib.md5()
-                # The goal here is to not run out of memory on really big files. However, the chunk
-                # size has to be large enough so that the python loop isn't too costly in terms of
-                # CPU.
-                CHUNK_SIZE = 1024 * 1024  # 1 mb
-                filedata = fp.read(CHUNK_SIZE)
-                while filedata:
-                    md5.update(filedata)
-                    filedata = fp.read(CHUNK_SIZE)
-                self.md5 = md5.digest()
-                fp.close()
+                self.md5 = self.db.get_md5(self.path)
             except Exception:
                 pass
 
@@ -202,8 +192,8 @@ class Folder(File):
 
     __slots__ = File.__slots__ + ("_subfolders",)
 
-    def __init__(self, path):
-        File.__init__(self, path)
+    def __init__(self, path, db):
+        File.__init__(self, path, db)
         self._subfolders = None
 
     def _all_items(self):
@@ -237,7 +227,7 @@ class Folder(File):
             subfolders = [
                 p for p in self.path.listdir() if not p.islink() and p.isdir()
             ]
-            self._subfolders = [self.__class__(p) for p in subfolders]
+            self._subfolders = [self.__class__(p, self.db) for p in subfolders]
         return self._subfolders
 
     @classmethod
@@ -245,7 +235,7 @@ class Folder(File):
         return not path.islink() and path.isdir()
 
 
-def get_file(path, fileclasses=[File]):
+def get_file(path, db, fileclasses=[File]):
     """Wraps ``path`` around its appropriate :class:`File` class.
 
     Whether a class is "appropriate" is decided by :meth:`File.can_handle`
@@ -255,10 +245,10 @@ def get_file(path, fileclasses=[File]):
     """
     for fileclass in fileclasses:
         if fileclass.can_handle(path):
-            return fileclass(path)
+            return fileclass(path, db)
 
 
-def get_files(path, fileclasses=[File]):
+def get_files(path, db, fileclasses=[File]):
     """Returns a list of :class:`File` for each file contained in ``path``.
 
     :param Path path: path to scan
@@ -268,7 +258,7 @@ def get_files(path, fileclasses=[File]):
     try:
         result = []
         for path in path.listdir():
-            file = get_file(path, fileclasses=fileclasses)
+            file = get_file(path, db, fileclasses=fileclasses)
             if file is not None:
                 result.append(file)
         return result
